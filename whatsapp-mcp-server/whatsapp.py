@@ -17,6 +17,33 @@ MESSAGES_DB_PATH = os.getenv(
 )
 WHATSAPP_API_BASE_URL = os.getenv("WHATSAPP_API_URL", "http://localhost:8080/api")
 
+# Cache for LID -> phone JID resolution to avoid repeated API calls
+_lid_resolution_cache: dict[str, str] = {}
+
+
+def resolve_jid(jid: str) -> str:
+    """Resolve a LID JID (@lid) to a phone-number JID (@s.whatsapp.net).
+    Returns the original JID if it's not a LID or if resolution fails."""
+    if "@lid" not in jid:
+        return jid
+
+    if jid in _lid_resolution_cache:
+        return _lid_resolution_cache[jid]
+
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/resolve-jid"
+        response = requests.post(url, json={"jid": jid}, timeout=10)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("was_resolved"):
+                resolved = result["resolved_jid"]
+                _lid_resolution_cache[jid] = resolved
+                return resolved
+    except Exception as e:
+        print(f"JID resolution failed for {jid}: {e}")
+
+    return jid
+
 
 @dataclass
 class Message:
@@ -227,6 +254,10 @@ def list_messages(
     Returns:
         List of message dictionaries with id, timestamp, sender, content, etc.
     """
+    # Auto-resolve LID JIDs to phone JIDs before querying local SQLite
+    if chat_jid and "@lid" in chat_jid:
+        chat_jid = resolve_jid(chat_jid)
+
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
@@ -555,6 +586,10 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> list[dict[str
         limit: Maximum number of chats to return (default 20)
         page: Page number for pagination (default 0)
     """
+    # Auto-resolve LID JIDs
+    if "@lid" in jid:
+        jid = resolve_jid(jid)
+
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
@@ -610,6 +645,10 @@ def get_last_interaction(jid: str) -> dict[str, Any] | None:
     Returns:
         Message dictionary or None if no messages found
     """
+    # Auto-resolve LID JIDs
+    if "@lid" in jid:
+        jid = resolve_jid(jid)
+
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
@@ -666,6 +705,10 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> dict[str, Any]
     Returns:
         Chat dictionary or None if not found
     """
+    # Auto-resolve LID JIDs
+    if "@lid" in chat_jid:
+        chat_jid = resolve_jid(chat_jid)
+
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
@@ -897,3 +940,78 @@ def download_media(message_id: str, chat_jid: str) -> str | None:
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         return None
+
+
+def mark_as_read(chat_jid: str) -> tuple[bool, str]:
+    """Mark a chat as read via the WhatsApp bridge API."""
+    try:
+        if not chat_jid:
+            return False, "chat_jid must be provided"
+
+        url = f"{WHATSAPP_API_BASE_URL}/mark-read"
+        payload = {"chat_jid": chat_jid}
+
+        response = requests.post(url, json=payload)
+
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("success", False), result.get("message", "Unknown response")
+        else:
+            return False, f"Error: HTTP {response.status_code} - {response.text}"
+
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
+
+def leave_group(chat_jid: str) -> tuple[bool, str]:
+    """Leave a WhatsApp group chat via the bridge API."""
+    try:
+        if not chat_jid:
+            return False, "chat_jid must be provided"
+
+        url = f"{WHATSAPP_API_BASE_URL}/leave-group"
+        payload = {"chat_jid": chat_jid}
+
+        response = requests.post(url, json=payload)
+
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("success", False), result.get("message", "Unknown response")
+        else:
+            return False, f"Error: HTTP {response.status_code} - {response.text}"
+
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
+
+def archive_chat(chat_jid: str, archive: bool = True) -> tuple[bool, str]:
+    """Archive or unarchive a chat via the WhatsApp bridge API."""
+    try:
+        if not chat_jid:
+            return False, "chat_jid must be provided"
+
+        url = f"{WHATSAPP_API_BASE_URL}/archive"
+        payload = {"chat_jid": chat_jid, "archive": archive}
+
+        response = requests.post(url, json=payload)
+
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("success", False), result.get("message", "Unknown response")
+        else:
+            return False, f"Error: HTTP {response.status_code} - {response.text}"
+
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"

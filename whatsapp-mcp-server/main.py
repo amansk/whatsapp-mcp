@@ -43,6 +43,15 @@ from whatsapp import (
 from whatsapp import (
     send_message as whatsapp_send_message,
 )
+from whatsapp import (
+    mark_as_read as whatsapp_mark_as_read,
+)
+from whatsapp import (
+    archive_chat as whatsapp_archive_chat,
+)
+from whatsapp import (
+    leave_group as whatsapp_leave_group,
+)
 
 # Initialize FastMCP server
 mcp = FastMCP("whatsapp")
@@ -364,6 +373,51 @@ def download_media(message_id: str, chat_jid: str) -> dict[str, Any]:
         return {"success": True, "message": "Media downloaded successfully", "file_path": file_path}
     else:
         return {"success": False, "message": "Failed to download media"}
+
+
+@mcp.tool()
+def mark_as_read(chat_jid: str) -> dict[str, Any]:
+    """Mark a WhatsApp chat as read. This syncs across all devices.
+
+    Args:
+        chat_jid: The JID of the chat to mark as read (e.g., "12025551234@s.whatsapp.net" or a group JID)
+
+    Returns:
+        A dictionary containing success status and a status message
+    """
+    success, status_message = whatsapp_mark_as_read(chat_jid)
+    return {"success": success, "message": status_message}
+
+
+@mcp.tool()
+def archive_chat(chat_jid: str, archive: bool = True) -> dict[str, Any]:
+    """Archive or unarchive a WhatsApp chat. This syncs across all devices.
+    Archiving a chat will also unpin it automatically.
+
+    Args:
+        chat_jid: The JID of the chat to archive/unarchive (e.g., "12025551234@s.whatsapp.net" or a group JID)
+        archive: True to archive, False to unarchive (default True)
+
+    Returns:
+        A dictionary containing success status and a status message
+    """
+    success, status_message = whatsapp_archive_chat(chat_jid, archive)
+    return {"success": success, "message": status_message}
+
+
+@mcp.tool()
+def leave_group(chat_jid: str) -> dict[str, Any]:
+    """Leave a WhatsApp group chat. This is irreversible — you will stop receiving messages.
+    Only works for group chats (@g.us JIDs), not individual chats.
+
+    Args:
+        chat_jid: The JID of the group to leave (e.g., "123456789@g.us")
+
+    Returns:
+        A dictionary containing success status and a status message
+    """
+    success, status_message = whatsapp_leave_group(chat_jid)
+    return {"success": success, "message": status_message}
 
 
 def shutdown_handler(signum, frame):

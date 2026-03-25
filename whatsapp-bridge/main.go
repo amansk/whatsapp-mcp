@@ -24,6 +24,7 @@ import (
 	"bytes"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
@@ -1283,6 +1284,208 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": true,
 				"message": fmt.Sprintf("Typing indicator set to %v", req.IsTyping),
+			})
+		}
+	})
+
+	// Handler for resolving a LID JID to a phone-number JID
+	http.HandleFunc("/api/resolve-jid", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			JID string `json:"jid"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+		if req.JID == "" {
+			http.Error(w, "jid is required", http.StatusBadRequest)
+			return
+		}
+
+		jid, err := types.ParseJID(req.JID)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Invalid JID: %v", err),
+			})
+			return
+		}
+
+		resolved := resolveLIDChat(client, jid, types.EmptyJID, types.EmptyJID, false)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":      true,
+			"original_jid": req.JID,
+			"resolved_jid": resolved.String(),
+			"was_resolved": resolved.String() != req.JID,
+		})
+	})
+
+	// Handler for marking a chat as read
+	http.HandleFunc("/api/mark-read", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			ChatJID string `json:"chat_jid"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+		if req.ChatJID == "" {
+			http.Error(w, "chat_jid is required", http.StatusBadRequest)
+			return
+		}
+
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Invalid JID: %v", err),
+			})
+			return
+		}
+
+		// Use appstate patch to mark the chat as read across all devices
+		patch := appstate.BuildMarkChatAsRead(chatJID, true, time.Time{}, nil)
+		err = client.SendAppState(context.Background(), patch)
+
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Failed to mark chat as read: %v", err),
+			})
+		} else {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"message": fmt.Sprintf("Chat %s marked as read", req.ChatJID),
+			})
+		}
+	})
+
+	// Handler for archiving/unarchiving a chat
+	http.HandleFunc("/api/archive", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			ChatJID string `json:"chat_jid"`
+			Archive bool   `json:"archive"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+		if req.ChatJID == "" {
+			http.Error(w, "chat_jid is required", http.StatusBadRequest)
+			return
+		}
+
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Invalid JID: %v", err),
+			})
+			return
+		}
+
+		// Use appstate patch to archive/unarchive the chat across all devices
+		patch := appstate.BuildArchive(chatJID, req.Archive, time.Time{}, nil)
+		err = client.SendAppState(context.Background(), patch)
+
+		w.Header().Set("Content-Type", "application/json")
+		action := "archived"
+		if !req.Archive {
+			action = "unarchived"
+		}
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Failed to %s chat: %v", action[:len(action)-1], err),
+			})
+		} else {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"message": fmt.Sprintf("Chat %s %s", req.ChatJID, action),
+			})
+		}
+	})
+
+	// Handler for leaving a group chat
+	http.HandleFunc("/api/leave-group", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			ChatJID string `json:"chat_jid"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+		if req.ChatJID == "" {
+			http.Error(w, "chat_jid is required", http.StatusBadRequest)
+			return
+		}
+
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Invalid JID: %v", err),
+			})
+			return
+		}
+
+		// Only allow leaving group chats
+		if chatJID.Server != types.GroupServer {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": "Can only leave group chats",
+			})
+			return
+		}
+
+		err = client.LeaveGroup(context.Background(), chatJID)
+
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Failed to leave group: %v", err),
+			})
+		} else {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"message": fmt.Sprintf("Left group %s", req.ChatJID),
 			})
 		}
 	})
